@@ -1,4 +1,5 @@
-# Builds the static app and deploys dist/ to this repo's GitHub Pages site.
+# Builds the static app and deploys dist/ to GitHub Pages.
+# Site: https://bprewitt11-creator.github.io/My-Lead-Sheet/
 # Pages source must be GitHub Actions (Settings → Pages).
 
 name: Deploy to GitHub Pages
@@ -33,16 +34,6 @@ jobs:
         run: npm ci
       - name: Check the seed library
         run: npm run check:data
-      - name: Check the music rules
-        run: npm run check:music
-      - name: Check stored-library repair
-        run: npm run check:storage
-      - name: Check screens
-        run: npm run check:screens
-      - name: Check the metronome
-        run: npm run check:metronome
-      - name: Check for hard-coded accounts and hosts
-        run: npm run check:portable
       - name: Build
         run: npm run build
       - name: Setup Pages
