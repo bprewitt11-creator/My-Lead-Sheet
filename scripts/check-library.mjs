@@ -16,6 +16,7 @@ const SONG_KEYS = [
   "tempo",
   "tempoNote",
   "timeSignature",
+  "officialRuntimeSec",
   "feel",
   "sourceNote",
   "atAGlance",
@@ -50,7 +51,13 @@ if (nullTempos.join(",") !== "5,13") {
   fail(`null tempos should be ids 5 and 13, found ${nullTempos.join(",") || "(none)"}`);
 }
 
+/** MusicBrainz album-track lengths in seconds. Truth (8) is from the album page. */
+const RUNTIMES = { 1: 244, 2: 261, 3: 259, 4: 166, 5: 237, 6: 273, 7: 310, 8: 222, 9: 240, 10: 197, 11: 267, 13: 233, 14: 272, 15: 310, 16: 183 };
+
 for (const song of library.songs) {
+  if (song.officialRuntimeSec !== RUNTIMES[song.id]) {
+    fail(`song ${song.id} officialRuntimeSec should be ${RUNTIMES[song.id]}, found ${song.officialRuntimeSec}`);
+  }
   const keys = Object.keys(song);
   if (keys.join("|") !== SONG_KEYS.join("|")) {
     fail(`song ${song.id} keys differ: ${keys.join(",")}`);
@@ -98,4 +105,30 @@ if (!chain.feel.startsWith("Slow-building Southern gospel-rock ballad")) {
 }
 if (chain.bassNotes[0].position !== "A string, 3rd fret") fail("Chain Breaker bass position changed");
 
-console.log("library.json ok: 15 songs, id 12 dropped, id 13 kept, Chain Breaker intact");
+/**
+ * No Half Steppin' moved its "THE FORM" reference block out of the body, so Learn counts only song sections.
+ * Its notes went to howToPlay and its 12-bar row opens every section. Everything else matches the export.
+ */
+const half = library.songs.find((song) => song.id === 13);
+const halfExport = original.songs.find((song) => song.id === 13);
+const [form, ...sections] = halfExport.body;
+const formBars = form.lines.find((line) => line.bars !== undefined);
+const formNotes = form.lines.filter((line) => line.note !== undefined).map((line) => line.note);
+if (!form.heading.startsWith("THE FORM") || !formBars || formNotes.length !== 2) fail("export's No Half Steppin' THE FORM block changed");
+if (half.body.some((section) => section.heading.startsWith("THE FORM"))) fail("No Half Steppin' still has a THE FORM heading");
+if (half.body.map((section) => section.heading).join("|") !== sections.map((section) => section.heading).join("|") || half.body.length !== 6) {
+  fail(`No Half Steppin' should have its 6 song headings, found ${half.body.map((section) => section.heading).join(", ")}`);
+}
+half.body.forEach((section, i) => {
+  if (JSON.stringify(section.lines) !== JSON.stringify([formBars, ...sections[i].lines])) {
+    fail(`No Half Steppin' ${section.heading} should be the 12-bar row, then its original lines unchanged`);
+  }
+});
+if (!formNotes.every((note) => half.howToPlay.includes(note)) || !half.howToPlay.startsWith(halfExport.howToPlay)) {
+  fail("No Half Steppin' howToPlay should keep its text and add THE FORM's notes verbatim");
+}
+for (const key of SONG_KEYS.filter((key) => !["officialRuntimeSec", "howToPlay", "body"].includes(key))) {
+  if (JSON.stringify(half[key]) !== JSON.stringify(halfExport[key])) fail(`No Half Steppin' ${key} changed`);
+}
+
+console.log("library.json ok: 15 songs, id 12 dropped, id 13 kept, Chain Breaker intact, official runtimes set, No Half Steppin' has 6 song sections with the 12-bar form in each");

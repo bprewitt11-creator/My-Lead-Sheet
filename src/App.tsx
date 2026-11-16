@@ -1,56 +1,116 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
-import { BackIcon, DotsIcon, OverflowMenu, ScreenToggle, SongControls } from "./controls";
-import { useAutoScroll, usePerformance, useWakeLock } from "./hooks";
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { AccountSheet, googleReturn, useAccount } from "./account";
+import { backupOff, backupOn, syncBackup, type BackupResult } from "./backup";
+import { BandsSheet } from "./bands";
+import { ChatSheet, queueOwner, type ChatTarget } from "./chat";
+import { clearLanding, landedCode } from "./codes";
+import { BackIcon, DotsIcon, Menu, OverflowMenu, ScreenToggle, SongControls } from "./controls";
+import { LearnedCues } from "./cues";
+import { useAutoScroll, usePerformance, useStored, useWakeLock } from "./hooks";
+import { LearnSong } from "./learn-song";
+import { SetlistList, SongBody, SongList, Tab } from "./library-lists";
+import { initialMetronomeBpm } from "./metronome";
 import { useMetronome } from "./metronome-view";
-import { displayKeyLabel, scrollPixelsPerSecond } from "./music";
+import { displayKeyLabel } from "./music";
+import { parseHash, type TabName } from "./route";
+import { READING_LINE, changeTempo, evenPlan, nextVersionName, scrollMotion, startTake, toggleHold, type ScrollVersion, type Take } from "./scroll-timing";
+import { FriendsSheet } from "./friends";
 import { LeadSheet } from "./sheet";
+import type { Account } from "./sign-in-methods";
+import { SongDataEditor } from "./song-data-editor";
 import {
   TEXT_SCALES,
   loadAwake,
   loadLibrary,
+  loadSongData,
   loadTextScaleIndex,
+  localRef,
   saveAwake,
+  saveSongData,
   saveTextScaleIndex,
-  songById,
-  tempoText,
+  songByRef,
+  withSongData,
 } from "./storage";
-import type { LibraryFile, Setlist, Song } from "./types";
+import { SaveTake, TeachBar, taughtPlan, useFollowTempo, useScrollVersions, type BarMenu } from "./teach";
+import type { Library, Song, SongData, SongRef } from "./types";
 
-type TabName = "songs" | "setlists";
+type MenuId = "shell" | "song" | BarMenu | null;
 
-type Route =
-  | { name: "songs" }
-  | { name: "setlists" }
-  | { name: "song"; id: number; from: TabName }
-  | { name: "live"; setlistId: number; index: number };
+type SongDataByRef = Record<SongRef, SongData>;
 
-type MenuId = "shell" | "song" | null;
+/** Teach mode: the take while it plays or Learn this song while it listens, then what either taught, until Save or Discard. */
+type Teaching = { take: Take } | { learning: true } | { taught: Omit<ScrollVersion, "name">; data?: SongData | null };
 
-function parseHash(hash: string): Route {
-  const raw = hash.replace(/^#/, "");
-  const path = (raw.split("?")[0] || "/songs").replace(/\/$/, "") || "/songs";
-  const query = raw.includes("?") ? raw.slice(raw.indexOf("?") + 1) : "";
-  const live = path.match(/^\/live\/(\d+)(?:\/(\d+))?$/);
-  if (live) return { name: "live", setlistId: Number(live[1]), index: Number(live[2] ?? 0) };
-  const match = path.match(/^\/song\/(\d+)$/);
-  if (match) {
-    const from = new URLSearchParams(query).get("from") === "setlists" ? "setlists" : "songs";
-    return { name: "song", id: Number(match[1]), from };
-  }
-  if (path === "/setlists") return { name: "setlists" };
-  return { name: "songs" };
-}
+const BACKUP_EVERY_MS = 60_000;
 
-function songHref(id: number, from: TabName): string {
-  return from === "setlists" ? `#/song/${id}?from=setlists` : `#/song/${id}`;
-}
+const loadAllSongData = (library: Library): SongDataByRef => Object.fromEntries(library.songs.map((song) => [song.ref, loadSongData(song.ref)]));
 
 export function App() {
-  const [library] = useState<LibraryFile>(() => loadLibrary());
+  const [stored] = useStored<Library>(loadLibrary);
+  const [songData, setSongData] = useStored<SongDataByRef>(() => loadAllSongData(stored), stored);
+  const library = useMemo<Library>(
+    () => ({ ...stored, songs: stored.songs.map((song) => withSongData(song, songData[song.ref] ?? {})) }),
+    [stored, songData],
+  );
+  const [editing, setEditing] = useState(false);
+  const [teaching, setTeaching] = useState<Teaching | null>(null);
   const [hash, setHash] = useState(() => window.location.hash);
-  const [textIndex, setTextIndex] = useState(() => loadTextScaleIndex());
-  const [awake, setAwake] = useState(() => loadAwake());
+  const [textIndex, setTextIndex] = useStored(loadTextScaleIndex);
+  const [awake, setAwake] = useStored(loadAwake);
   const [menu, setMenu] = useState<MenuId>(null);
+  const { account, setAccount, checking } = useAccount();
+  const [accountOpen, setAccountOpen] = useState(() => googleReturn() !== null);
+  const [friends, setFriends] = useState<{ code?: string } | null>(null);
+  const [bands, setBands] = useState<{ code?: string } | null>(null);
+  const [chat, setChat] = useState<{ open?: ChatTarget } | null>(null);
+  const [landed, setLanded] = useState(landedCode);
+
+  useEffect(() => {
+    if (landed) clearLanding();
+  }, []);
+  useEffect(() => queueOwner(account?.userId ?? null), [account?.userId]);
+
+  useEffect(() => {
+    const open = landed?.screen === "friends" ? setFriends : landed?.screen === "bands" ? setBands : null;
+    if (!landed || !open || checking) return;
+    if (!account) return setAccountOpen(true);
+    if (accountOpen) return;
+    open({ code: landed.code });
+    setLanded(null);
+  }, [landed, account, checking, accountOpen]);
+
+  const [backup, setBackup] = useState<BackupResult | null>(null);
+
+  const runBackup = useCallback(async (onlyIfChanged = false) => {
+    const result = await syncBackup({ onlyIfChanged });
+    if (result.signedOut) setAccount(null);
+    setBackup(result);
+  }, []);
+
+  useEffect(() => {
+    runBackup();
+    const timer = setInterval(() => runBackup(true), BACKUP_EVERY_MS);
+    const onShow = () => document.visibilityState === "visible" && runBackup();
+    document.addEventListener("visibilitychange", onShow);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onShow);
+    };
+  }, [runBackup]);
+
+  const onAccount = useCallback(
+    (next: Account | null) => {
+      setAccount(next);
+      if (next) {
+        backupOn(next.userId);
+        runBackup();
+      } else {
+        backupOff();
+        setBackup(null);
+      }
+    },
+    [runBackup],
+  );
 
   useEffect(() => {
     if (!window.location.hash) {
@@ -62,6 +122,7 @@ export function App() {
   }, []);
 
   const route = parseHash(hash);
+  const showTabs = route.name !== "live";
   const tab: TabName =
     route.name === "setlists" || (route.name === "song" && route.from === "setlists")
       ? "setlists"
@@ -70,42 +131,63 @@ export function App() {
   const liveSetlist = route.name === "live" ? library.setlists.find((set) => set.id === route.setlistId) : undefined;
   const liveIndex =
     route.name === "live" && liveSetlist
-      ? Math.min(Math.max(route.index, 0), Math.max(liveSetlist.songIds.length - 1, 0))
+      ? Math.min(Math.max(route.index, 0), Math.max(liveSetlist.songRefs.length - 1, 0))
       : 0;
   const liveSong =
-    route.name === "live" && liveSetlist ? songById(library.songs, liveSetlist.songIds[liveIndex] ?? -1) : undefined;
+    route.name === "live" && liveSetlist ? songByRef(library.songs, liveSetlist.songRefs[liveIndex]) : undefined;
   const activeSong =
-    route.name === "song" ? songById(library.songs, route.id) : route.name === "live" ? liveSong : undefined;
+    route.name === "song" ? songByRef(library.songs, localRef(route.id)) : route.name === "live" ? liveSong : undefined;
 
-  const performance = usePerformance(activeSong?.id ?? null);
+  const performance = usePerformance(activeSong?.ref ?? null);
   const metronome = useMetronome(activeSong?.id ?? null, activeSong ? activeSong.tempo : null);
-  // Scroll reads the stored song tempo and the scroll percentage only.
-  // metronome.bpm is a separate performance setting and must not be passed in.
-  useAutoScroll(
+  const versions = useScrollVersions(activeSong?.ref ?? null);
+  const take = teaching && "take" in teaching ? teaching.take : null;
+  const version = versions.selected == null ? null : versions.versions[versions.selected];
+  const learned = take ? undefined : version?.learned;
+  const even = activeSong ? evenPlan(activeSong) : null;
+  // The metronome's speed against the plan's BPM scales the timed scroll, so a tempo change applies at once.
+  const motion = activeSong
+    ? scrollMotion(activeSong, version, take, metronome.bpm, performance.percent)
+    : ({ kind: "pace", pxPerSec: 0 } as const);
+  const clock = useAutoScroll(
     performance.scrolling && activeSong != null,
-    activeSong ? scrollPixelsPerSecond(activeSong.tempo, performance.percent) : 0,
-    performance.stopScroll,
+    motion,
+    take ? "take" : version ? `version ${versions.selected}` : `even ${activeSong?.officialRuntimeSec} ${activeSong?.tempo}`,
+    (reason) => (take ? (reason === "end" ? finishTake(take) : stopTake(take)) : performance.stopScroll()),
   );
   useWakeLock(awake);
+  useFollowTempo(performance.scrolling && !take ? version?.tempo : undefined, clock, metronome.setBpm);
+
+  useEffect(() => {
+    if (!take || metronome.bpm == null) return;
+    const next = changeTempo(take, clock.current, metronome.bpm);
+    if (next !== take) setTeaching({ take: next });
+  }, [metronome.bpm]);
 
   useEffect(() => {
     document.getElementById("sheet-scroll")?.scrollTo(0, 0);
     setMenu(null);
-    const current = parseHash(hash);
-    const titleSong =
-      current.name === "song"
-        ? songById(library.songs, current.id)
-        : current.name === "live"
-          ? songById(
-              library.songs,
-              library.setlists.find((set) => set.id === current.setlistId)?.songIds[current.index] ?? -1,
-            )
-          : undefined;
-    document.title = titleSong ? `${titleSong.title} — Lead Sheets` : "Lead Sheets";
-  }, [hash, library.songs, library.setlists]);
+    setEditing(false);
+    setTeaching(null);
+  }, [hash]);
+
+  useEffect(() => {
+    document.title = activeSong ? `${activeSong.title} — Lead Sheets` : "Lead Sheets";
+  }, [activeSong]);
 
   const closeMenu = () => setMenu(null);
   const toggleMenu = (id: Exclude<MenuId, null>) => setMenu((current) => (current === id ? null : id));
+
+  const shellMenu: [label: string, open: () => void][] = [
+    [account ? "Account" : "Sign in", () => setAccountOpen(true)],
+    ...(account ? ([["Friends", () => setFriends({})], ["Bands", () => setBands({})], ["Messages", () => setChat({})]] as [string, () => void][]) : []),
+  ];
+
+  const messageUser = (userId: string) => {
+    setFriends(null);
+    setBands(null);
+    setChat({ open: { userId } });
+  };
 
   const changeText = (index: number) => {
     const next = Math.max(0, Math.min(TEXT_SCALES.length - 1, index));
@@ -123,7 +205,9 @@ export function App() {
   const onTabKey = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
     event.preventDefault();
-    window.location.hash = tab === "songs" ? "#/setlists" : "#/songs";
+    const next: TabName = tab === "songs" ? "setlists" : "songs";
+    document.getElementById(`tab-${next}`)?.focus();
+    window.location.hash = `#/${next}`;
   };
 
   const goBack = () => {
@@ -132,6 +216,33 @@ export function App() {
     } else if (route.name === "live") {
       window.location.hash = "#/setlists";
     }
+  };
+
+  const teach = () => {
+    if (!even) return;
+    setTeaching({ take: startTake(even, metronome.bpm ?? even.bpm) });
+    performance.setScrolling(true);
+  };
+
+  const finishTake = (current: Take) => {
+    performance.stopScroll();
+    setTeaching({ taught: taughtPlan(current, clock.current) });
+  };
+
+  const discardTake = () => {
+    performance.stopScroll();
+    setTeaching(null);
+  };
+
+  /** A stop mid-take offers to save it, unless nothing was taught yet. */
+  const stopTake = (current: Take) => (current.marks.length > 1 ? finishTake(current) : discardTake());
+
+  const saveData = (song: Song, data: SongData) => {
+    saveSongData(song.ref, data);
+    setSongData((current) => ({ ...current, [song.ref]: data }));
+    const tempo = data.tempo ?? songByRef(stored.songs, song.ref)?.tempo ?? null;
+    if (tempo !== song.tempo) metronome.setBpm(initialMetronomeBpm(tempo));
+    setEditing(false);
   };
 
   const goLive = (index: number) => {
@@ -151,7 +262,7 @@ export function App() {
         >
           <BackIcon />
         </button>
-        <h1 className="shell-title">Lead Sheets</h1>
+        {activeSong ? <p className="shell-title">Lead Sheets</p> : <h1 className="shell-title">Lead Sheets</h1>}
         {activeSong ? (
           <OverflowMenu
             label="More"
@@ -159,31 +270,36 @@ export function App() {
             open={menu === "shell"}
             onToggle={() => toggleMenu("shell")}
             onClose={closeMenu}
-            onEdit={closeMenu}
-            onDelete={closeMenu}
           />
         ) : (
-          <button type="button" className="icon-btn" aria-label="More">
-            <DotsIcon />
-          </button>
+          <Menu button={<DotsIcon />} label="More" className="icon-btn" open={menu === "shell"} onToggle={() => toggleMenu("shell")} onClose={closeMenu}>
+            {shellMenu.map(([label, open]) => (
+              <button
+                key={label}
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeMenu();
+                  open();
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </Menu>
         )}
       </header>
 
-      {route.name === "live" ? null : (
+      {showTabs ? (
         <div className="tabs" role="tablist" aria-label="Library" onKeyDown={onTabKey}>
-          <a href="#/songs" role="tab" aria-selected={tab === "songs"} className={tab === "songs" ? "tab is-selected" : "tab"}>
+          <Tab name="songs" selected={tab === "songs"}>
             My Songs
-          </a>
-          <a
-            href="#/setlists"
-            role="tab"
-            aria-selected={tab === "setlists"}
-            className={tab === "setlists" ? "tab is-selected" : "tab"}
-          >
+          </Tab>
+          <Tab name="setlists" selected={tab === "setlists"}>
             Setlists
-          </a>
+          </Tab>
         </div>
-      )}
+      ) : null}
 
       {activeSong ? (
         <SongControls
@@ -195,12 +311,11 @@ export function App() {
           menuOpen={menu === "song"}
           onMenuToggle={() => toggleMenu("song")}
           onMenuClose={closeMenu}
-          onEdit={closeMenu}
-          onDelete={closeMenu}
+          onSongData={() => setEditing(true)}
           notation={performance.notation}
           onNotation={performance.changeNotation}
           scrolling={performance.scrolling}
-          onToggleScroll={() => performance.setScrolling((on) => !on)}
+          onToggleScroll={() => (take ? stopTake(take) : performance.setScrolling((on) => !on))}
           percent={performance.percent}
           onPercent={performance.changePercent}
           keyLabel={displayKeyLabel(activeSong, performance.semitones)}
@@ -214,18 +329,124 @@ export function App() {
         </div>
       )}
 
-      {route.name === "live" && liveSetlist ? (
+      {activeSong && (even || versions.versions.length > 0 || route.name === "song") ? (
+        <TeachBar
+          key={activeSong.ref}
+          versions={versions.versions}
+          selected={versions.selected}
+          canTeach={even != null}
+          teaching={take != null}
+          holding={take?.holding ?? false}
+          bpm={metronome.bpm}
+          menu={menu}
+          onToggleMenu={toggleMenu}
+          onCloseMenu={closeMenu}
+          onSelect={versions.select}
+          onRename={versions.rename}
+          onRetime={versions.retime}
+          onDelete={versions.remove}
+          onTeach={teach}
+          onListen={route.name === "song" ? () => setTeaching({ learning: true }) : undefined}
+          onHold={() => take && setTeaching({ take: toggleHold(take, clock.current) })}
+          onBpm={metronome.setBpm}
+          onDone={() => take && finishTake(take)}
+          onDiscard={discardTake}
+        />
+      ) : null}
+
+      {activeSong && teaching && "learning" in teaching ? (
+        <LearnSong
+          song={activeSong}
+          original={withSongData(songByRef(stored.songs, activeSong.ref)!, {})}
+          metronomeBpm={metronome.bpm}
+          onSave={(taught, data) => setTeaching({ taught, data })}
+          onClose={() => setTeaching(null)}
+        />
+      ) : null}
+
+      {activeSong && teaching && "taught" in teaching ? (
+        <SaveTake
+          name={nextVersionName(versions.versions)}
+          onSave={(name) => {
+            versions.add(teaching.taught, name);
+            if (teaching.data) saveData(activeSong, teaching.data);
+            setTeaching(null);
+          }}
+          onDiscard={() => setTeaching(null)}
+        />
+      ) : null}
+
+      {activeSong && editing ? (
+        <SongDataEditor
+          song={activeSong}
+          original={withSongData(songByRef(stored.songs, activeSong.ref)!, {})}
+          onSave={(data) => saveData(activeSong, data)}
+          onClose={() => setEditing(false)}
+        />
+      ) : null}
+
+      {accountOpen ? (
+        <AccountSheet
+          account={account}
+          backup={backup}
+          onAccount={onAccount}
+          onClose={() => {
+            setAccountOpen(false);
+            if (!account) setLanded(null);
+          }}
+        />
+      ) : null}
+
+      {friends && account ? (
+        <FriendsSheet
+          account={account}
+          code={friends.code}
+          onMessage={messageUser}
+          onSignedOut={() => {
+            setAccount(null);
+            setFriends(null);
+          }}
+          onClose={() => setFriends(null)}
+        />
+      ) : null}
+
+      {bands && account ? (
+        <BandsSheet
+          account={account}
+          code={bands.code}
+          onMessage={messageUser}
+          onSignedOut={() => {
+            setAccount(null);
+            setBands(null);
+          }}
+          onClose={() => setBands(null)}
+        />
+      ) : null}
+
+      {chat && account ? (
+        <ChatSheet
+          account={account}
+          open={chat.open}
+          onSignedOut={() => {
+            setAccount(null);
+            setChat(null);
+          }}
+          onClose={() => setChat(null)}
+        />
+      ) : null}
+
+      {liveSetlist && liveSetlist.songRefs.length > 0 ? (
         <div className="live-nav">
           <button type="button" aria-label="Previous song" disabled={liveIndex <= 0} onClick={() => goLive(liveIndex - 1)}>
             Prev
           </button>
           <span className="live-count">
-            {liveSetlist.name} · {liveIndex + 1}/{liveSetlist.songIds.length}
+            {liveSetlist.name} · {liveIndex + 1}/{liveSetlist.songRefs.length}
           </span>
           <button
             type="button"
             aria-label="Next song"
-            disabled={liveIndex >= liveSetlist.songIds.length - 1}
+            disabled={liveIndex >= liveSetlist.songRefs.length - 1}
             onClick={() => goLive(liveIndex + 1)}
           >
             Next
@@ -233,13 +454,21 @@ export function App() {
         </div>
       ) : null}
 
-      <div className="scroll" id="sheet-scroll">
+      <div
+        className="scroll"
+        id="sheet-scroll"
+        role={showTabs ? "tabpanel" : undefined}
+        aria-labelledby={showTabs ? `tab-${tab}` : undefined}
+      >
+        {performance.scrolling && learned && motion.kind === "learned" ? (
+          <LearnedCues learned={learned} clock={clock} rate={motion.rate} metronomeOn={metronome.playing} />
+        ) : null}
         {route.name === "songs" ? <SongList songs={library.songs} /> : null}
         {route.name === "setlists" ? <SetlistList setlists={library.setlists} songs={library.songs} /> : null}
         {route.name === "song" ? (
           <SongBody
             library={library}
-            id={route.id}
+            songRef={localRef(route.id)}
             scale={TEXT_SCALES[textIndex]}
             semitones={performance.semitones}
             notation={performance.notation}
@@ -257,98 +486,14 @@ export function App() {
             />
           ) : (
             <div className="missing">
-              <p>That setlist isn&apos;t in this library.</p>
+              <p>{liveSetlist?.songRefs.length === 0 ? "This setlist is empty." : "That setlist isn't in this library."}</p>
               <a href="#/setlists">Back to Setlists</a>
             </div>
           )
         ) : null}
+        {/* Room below the sheet, so a learned version can bring the chart's end up to the reading line. */}
+        {learned ? <div style={{ height: `calc(100% - ${READING_LINE}px)` }} /> : null}
       </div>
-    </div>
-  );
-}
-
-function SongBody({
-  library,
-  id,
-  scale,
-  semitones,
-  notation,
-  metronome,
-}: {
-  library: LibraryFile;
-  id: number;
-  scale: number;
-  semitones: number;
-  notation: "notes" | "nashville";
-  metronome: ReturnType<typeof useMetronome>;
-}) {
-  const song = songById(library.songs, id);
-  if (!song) {
-    return (
-      <div className="missing">
-        <p>That song isn&apos;t in this library.</p>
-        <a href="#/songs">Back to My Songs</a>
-      </div>
-    );
-  }
-  return <LeadSheet song={song} scale={scale} semitones={semitones} notation={notation} metronome={metronome} />;
-}
-
-function SongList({ songs }: { songs: Song[] }) {
-  return (
-    <ul className="song-list">
-      {songs.map((song) => (
-        <li key={song.id}>
-          <a className="song-row" href={songHref(song.id, "songs")}>
-            <span className="song-title">{song.title}</span>
-            <span className="song-artist">{song.artist}</span>
-            <span className="song-meta">
-              <span className="song-key">{song.keyLabel}</span>
-              <span> · {song.tempo == null ? "Tempo —" : tempoText(song.tempo)}</span>
-            </span>
-          </a>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function SetlistList({ setlists, songs }: { setlists: Setlist[]; songs: Song[] }) {
-  return (
-    <div className="setlists">
-      {setlists.map((setlist) => (
-        <section key={setlist.id} className="setlist" aria-label={setlist.name}>
-          <div className="setlist-head">
-            <h2>{setlist.name}</h2>
-            <a className="live-launch" href={`#/live/${setlist.id}/0`}>
-              Live
-            </a>
-          </div>
-          <ol>
-            {setlist.songIds.map((id, index) => {
-              const song = songById(songs, id);
-              return (
-                <li key={`${setlist.id}-${id}-${index}`}>
-                  {song ? (
-                    <a className="song-row setlist-row" href={songHref(song.id, "setlists")}>
-                      <span className="setlist-num">{index + 1}</span>
-                      <span className="setlist-copy">
-                        <span className="song-title">{song.title}</span>
-                        <span className="song-artist">{song.artist}</span>
-                      </span>
-                    </a>
-                  ) : (
-                    <div className="song-row setlist-row">
-                      <span className="setlist-num">{index + 1}</span>
-                      <span className="song-artist">Missing from this library</span>
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ol>
-        </section>
-      ))}
     </div>
   );
 }

@@ -28,6 +28,10 @@ body,
   background: var(--bg);
 }
 
+html {
+  touch-action: pan-x pan-y;
+}
+
 body {
   color: var(--text);
   -webkit-font-smoothing: antialiased;
@@ -594,6 +598,7 @@ a:focus-visible {
   line-height: 1.02;
   letter-spacing: -0.03em;
   text-transform: uppercase;
+  overflow-wrap: break-word;
 }
 
 .sheet-name {
@@ -670,24 +675,20 @@ a:focus-visible {
   text-align: left;
   vertical-align: top;
   padding: 0.45em 0.45em 0.45em 0;
-  overflow-wrap: break-word;
 }
 
+/* Headers wrap only between words, so they stop growing once "Nashville" would no longer fit its 20% column. */
 .bass th {
-  font-size: 0.72em;
+  font-size: min(0.72em, 3.3vw);
   font-weight: 700;
   color: var(--ink);
   vertical-align: bottom;
   border-bottom: 2px solid var(--ink);
   padding-bottom: 0.4em;
-  white-space: nowrap;
-}
-
-.bass th:nth-child(3) {
-  white-space: normal;
 }
 
 .bass td {
+  overflow-wrap: break-word;
   font-size: 0.94em;
   border-bottom: 1px solid #e4d9c6;
   line-height: 1.35;
@@ -713,8 +714,8 @@ a:focus-visible {
 }
 
 .chart {
+  display: flow-root;
   margin-top: 0.2em;
-  overflow-x: auto;
   color-scheme: light;
 }
 
@@ -742,8 +743,6 @@ a:focus-visible {
   font-feature-settings: "liga" 0, "calt" 0;
   white-space: pre;
   line-height: 1.35;
-  width: max-content;
-  min-width: 100%;
 }
 
 .chords,
@@ -880,7 +879,7 @@ a:focus-visible {
 }
 
 .metro-pad.is-on .metro-lamp {
-  background: #e1a01e;
+  background: #d7263d;
   animation: metro-blink calc(60s / var(--metro-bpm, 60)) linear infinite;
 }
 
@@ -973,4 +972,66 @@ a:focus-visible {
   line-height: 1.35;
   font-weight: 600;
   color: var(--ink-soft);
+}
+
+.hint {
+  font-size: 0.85em;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--ink-soft);
+}
+
+.menu button:disabled {
+  opacity: 0.45;
+}
+
+.menu-note {
+  margin: 4px 12px 6px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.setlist-empty {
+  margin: 0;
+  padding: 4px 16px;
+  color: var(--text-dim);
+}
+
+.missing button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--gold);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.beat-rail {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 0;
+}
+
+.beat-dot {
+  position: absolute;
+  top: 6px;
+  right: -12px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #d7263d;
+}
+
+.beat-dot[data-beat="off"] {
+  visibility: hidden;
+}
+
+.privacy-link {
+  display: block;
+  padding: 8px 16px calc(24px + env(safe-area-inset-bottom));
+  color: var(--text-dim);
+  font-size: 0.875rem;
 }

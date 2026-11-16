@@ -1,0 +1,229 @@
+.teach-bar {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 10px 2px;
+}
+
+/* A 32px pill inside a 44px touch target. */
+.teach-btn,
+.teach-name,
+.teach-tempo input {
+  height: 44px;
+  border: 6px solid transparent;
+  border-radius: 999px;
+  background: var(--bg-2) padding-box;
+  color: var(--text);
+  font-weight: 700;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.teach-btn {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 12px;
+}
+
+.teach-dim {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.teach-bar .menu-anchor:first-child {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.teach-bar .menu-anchor:first-child .menu {
+  left: 0;
+  right: auto;
+}
+
+.teach-bar .menu {
+  width: max-content;
+  max-width: calc(100vw - 20px);
+}
+
+.teach-bar .menu button {
+  height: auto;
+  min-height: 44px;
+}
+
+.menu-divider {
+  height: 1px;
+  margin: 6px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.teach-btn.is-on {
+  background: var(--gold);
+  color: var(--on-gold);
+}
+
+.teach-btn:disabled {
+  opacity: 0.35;
+}
+
+.teach-name {
+  min-width: 0;
+  width: 9em;
+  padding: 0 12px;
+}
+
+.teach-btn.is-danger {
+  color: var(--danger);
+}
+
+.teach-status,
+.teach-question {
+  margin-right: auto;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.teach-status {
+  color: var(--gold);
+}
+
+.teach-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: end center;
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.teach-sheet {
+  width: min(100%, 420px);
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  background: #322c24;
+  border-radius: 16px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  color: var(--text);
+}
+
+.teach-sheet h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.teach-sheet input {
+  min-width: 0;
+  height: 40px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 16px;
+}
+
+.teach-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.teach-actions button {
+  height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--text);
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.teach-actions .is-primary {
+  background: var(--gold);
+  color: var(--on-gold);
+}
+
+@media (min-width: 768px) {
+  .teach-bar {
+    padding: 0 20px 6px;
+  }
+
+  .teach-btn,
+  .teach-name,
+  .teach-tempo input {
+    height: 48px;
+    font-size: 14px;
+  }
+}
+
+.teach-status ~ .teach-btn {
+  padding: 0 8px;
+  border-width: 6px 3px;
+}
+
+.teach-tempo {
+  position: relative;
+  flex: none;
+}
+
+.teach-tempo span {
+  position: absolute;
+  top: 8px;
+  left: 0;
+  right: 0;
+  font-size: 9px;
+  line-height: 1;
+  text-align: center;
+  pointer-events: none;
+}
+
+.teach-tempo input {
+  width: 3em;
+  padding: 9px 0 0;
+  border-width: 6px 3px;
+  font-size: 16px;
+  line-height: 1;
+  text-align: center;
+}
+
+.teach-tempo-rows {
+  display: grid;
+  gap: 8px;
+}
+
+.teach-tempo-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 6.5em;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.teach-tempo-start {
+  padding: 0 12px;
+  font-size: 16px;
+}
+
+.teach-sheet > button,
+.teach-tempo-row button {
+  height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--text);
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.teach-sheet input[aria-invalid="true"] {
+  outline: 2px solid var(--danger);
+}

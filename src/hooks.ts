@@ -1,41 +1,51 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from "react";
 import { clampScrollPercent, type Notation } from "./music";
-import { loadNotation, loadScrollPercent, saveNotation, saveScrollPercent } from "./storage";
+import { READING_LINE, runScroll, type Motion, type Section, type TimeSource } from "./scroll-timing";
+import { loadNotation, loadScrollPercent, onStorageChange, saveNotation, saveScrollPercent, storageGeneration } from "./storage";
+import type { SongRef } from "./types";
 
-export function usePerformance(songId: number | null) {
+/**
+ * A value a screen keeps from storage. It is read again when `key` changes and whenever a sync rewrites storage, so
+ * no screen goes on showing, or writing back, a copy older than what is stored.
+ */
+export function useStored<T>(load: () => T, key: unknown = null): [T, Dispatch<SetStateAction<T>>] {
+  const generation = useSyncExternalStore(onStorageChange, storageGeneration, storageGeneration);
+  const [held, setHeld] = useState(() => ({ value: load(), key, generation }));
+  const set: Dispatch<SetStateAction<T>> = (next) =>
+    setHeld((current) => ({ ...current, value: next instanceof Function ? next(current.value) : next }));
+  if (held.key === key && held.generation === generation) return [held.value, set];
+  const fresh = { value: load(), key, generation };
+  setHeld(fresh);
+  return [fresh.value, set];
+}
+
+export function usePerformance(songRef: SongRef | null) {
   const [semitones, setSemitones] = useState(0);
-  const [notation, setNotation] = useState<Notation>("notes");
-  const [percent, setPercent] = useState(100);
+  const [notation, setNotation] = useStored<Notation>(() => (songRef == null ? "notes" : loadNotation(songRef)), songRef);
+  const [percent, setPercent] = useStored(() => (songRef == null ? 100 : loadScrollPercent(songRef)), songRef);
   const [scrolling, setScrolling] = useState(false);
-  const [boundId, setBoundId] = useState<number | null>(null);
+  const [boundRef, setBoundRef] = useState<SongRef | null>(null);
 
-  if (songId !== boundId) {
-    setBoundId(songId);
+  if (songRef !== boundRef) {
+    setBoundRef(songRef);
     setSemitones(0);
     setScrolling(false);
-    if (songId == null) {
-      setNotation("notes");
-      setPercent(100);
-    } else {
-      setNotation(loadNotation(songId));
-      setPercent(loadScrollPercent(songId));
-    }
   }
 
   useEffect(() => {
-    if (songId == null) return;
+    if (songRef == null) return;
     document.getElementById("sheet-scroll")?.scrollTo(0, 0);
-  }, [songId]);
+  }, [songRef]);
 
   const changeNotation = (next: Notation) => {
     setNotation(next);
-    if (songId != null) saveNotation(songId, next);
+    if (songRef != null) saveNotation(songRef, next);
   };
 
   const changePercent = (next: number) => {
     const clamped = clampScrollPercent(next);
     setPercent(clamped);
-    if (songId != null) saveScrollPercent(songId, clamped);
+    if (songRef != null) saveScrollPercent(songRef, clamped);
   };
 
   const stopScroll = () => setScrolling(false);
@@ -53,68 +63,71 @@ export function usePerformance(songId: number | null) {
   };
 }
 
-/** Scrolls #sheet-scroll. Grabbing or a manual scroll pauses. Starting at the bottom restarts at the top. */
-export function useAutoScroll(active: boolean, pxPerSec: number, onStop: () => void) {
-  const pxRef = useRef(pxPerSec);
-  pxRef.current = pxPerSec;
+/**
+ * Scrolls #sheet-scroll by `motion`. A timed motion moves #chord-section only: from its top at the top of the
+ * view to its bottom at the bottom. A learned one brings each heading, then the chart's end, to the reading line.
+ * Grabbing or a manual scroll pauses. A new `plan` re-syncs from where the sheet is. Returns the timed clock, in
+ * seconds at the plan's BPM. `time` is band time in a gig; solo leaves it out.
+ */
+export function useAutoScroll(
+  active: boolean,
+  motion: Motion,
+  plan: string,
+  onStop: (reason: "user" | "end") => void,
+  time?: TimeSource,
+) {
+  const motionRef = useRef(motion);
+  motionRef.current = motion;
   const onStopRef = useRef(onStop);
   onStopRef.current = onStop;
+  const clock = useRef(0);
 
   useEffect(() => {
     if (!active) return;
     const el = document.getElementById("sheet-scroll");
     if (!el) return;
+    return scrollChart(el, () => document.getElementById("chord-section"), motionRef, clock, (reason) => onStopRef.current(reason), time);
+  }, [active, plan, time]);
 
-    const limit = () => Math.max(0, el.scrollHeight - el.clientHeight);
-    // scrollTop is integer on some browsers, and 78 BPM is only ~19px/s,
-    // so a per-frame bump of a fraction of a pixel would be rounded away.
-    let position = el.scrollTop;
-    if (position >= limit() - 2) {
-      position = 0;
-      el.scrollTop = 0;
+  return clock;
+}
+
+/**
+ * Runs `runScroll` over the chord section, measured afresh every frame so a text size or window change keeps the
+ * same progress. When the section has moved since the last frame, the browser shifted or clamped the scroll for
+ * the new layout, so that scroll event is not passed on as the player scrolling.
+ */
+export function scrollChart(
+  el: HTMLElement,
+  chart: () => HTMLElement | null,
+  motion: { current: Motion },
+  clock: { current: number },
+  onStop: (reason: "user" | "end") => void,
+  time?: TimeSource,
+): () => void {
+  let last: Section | null = null;
+  const section = (): Section | null => {
+    const found = chart();
+    if (!found) return null;
+    const origin = el.getBoundingClientRect().top - el.scrollTop;
+    const start = found.getBoundingClientRect().top - origin;
+    last = { start, end: start + found.offsetHeight - el.clientHeight };
+    const tops = () => [...found.querySelectorAll(".chart-heading")].map((heading) => heading.getBoundingClientRect().top - origin);
+    return { ...last, lines: () => [...tops(), start + found.offsetHeight].map((top) => top - READING_LINE) };
+  };
+  const relaid = (event: Event) => {
+    const before = last;
+    const now = section();
+    if (before && now && (Math.abs(now.start - before.start) >= 1 || Math.abs(now.end - before.end) >= 1)) {
+      event.stopImmediatePropagation();
     }
-    let expected = position;
-    let armed = false;
-
-    let frame = 0;
-    let last = performance.now();
-
-    const stop = () => onStopRef.current();
-    const onScroll = () => {
-      if (!armed) return;
-      if (Math.abs(el.scrollTop - expected) < 2) return;
-      stop();
-    };
-
-    el.addEventListener("pointerdown", stop);
-    el.addEventListener("wheel", stop, { passive: true });
-    el.addEventListener("scroll", onScroll, { passive: true });
-    armed = true;
-
-    const tick = (now: number) => {
-      const dt = Math.min(0.05, (now - last) / 1000);
-      last = now;
-      const max = limit();
-      position = Math.min(max, position + pxRef.current * dt);
-      if (position >= max - 0.5) {
-        expected = max;
-        el.scrollTop = max;
-        stop();
-        return;
-      }
-      expected = position;
-      el.scrollTop = position;
-      frame = requestAnimationFrame(tick);
-    };
-    frame = requestAnimationFrame(tick);
-
-    return () => {
-      cancelAnimationFrame(frame);
-      el.removeEventListener("pointerdown", stop);
-      el.removeEventListener("wheel", stop);
-      el.removeEventListener("scroll", onScroll);
-    };
-  }, [active]);
+  };
+  el.addEventListener("scroll", relaid, { passive: true });
+  const stop = runScroll(el, motion, section, clock, onStop, time);
+  return () => {
+    stop();
+    el.removeEventListener("scroll", relaid);
+  };
 }
 
 /** Screen Wake Lock. Missing support and rejected requests are silent. The OS drops the lock when the page hides, so it is requested again on return. */
@@ -153,4 +166,14 @@ export function useWakeLock(enabled: boolean) {
       release();
     };
   }, [enabled]);
+}
+
+export function useEscape(onClose: () => void) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
 }
